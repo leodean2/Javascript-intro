@@ -162,7 +162,7 @@ async def add_to_cart(session_id: str, product_id: str, quantity: int = 1):
         raise HTTPException(status_code=400, detail="Insufficient stock")
     
     # Find or create cart
-    cart = await db.carts.find_one({"session_id": session_id})
+    cart = await db.carts.find_one({"session_id": session_id}, {"_id": 0})
     if not cart:
         cart = Cart(session_id=session_id, items=[])
         cart = cart.dict()
