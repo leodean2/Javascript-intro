@@ -200,7 +200,7 @@ async def add_to_cart(session_id: str, product_id: str, quantity: int = 1):
 
 @api_router.get("/cart/{session_id}")
 async def get_cart(session_id: str):
-    cart = await db.carts.find_one({"session_id": session_id})
+    cart = await db.carts.find_one({"session_id": session_id}, {"_id": 0})
     if not cart:
         return {"items": [], "total_amount": 0}
     return cart
