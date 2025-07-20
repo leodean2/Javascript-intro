@@ -1,9 +1,13 @@
 import React, { useState, useEffect } from "react";
+import { BrowserRouter as Router, Route, Routes, Link } from "react-router-dom";
 import "./App.css";
 import axios from "axios";
+import Admin from "./Admin";
+import Login from "./Login";
+import Register from "./Register";
+import Profile from "./Profile";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+const API = `http://localhost:5001/api`;
 
 // Generate a session ID for the cart
 const getSessionId = () => {
@@ -21,7 +25,7 @@ const Header = ({ cartItemsCount, onCartClick, onHomeClick }) => {
     <header className="bg-gray-900 text-white shadow-lg sticky top-0 z-50">
       <div className="container mx-auto px-4 py-4">
         <div className="flex justify-between items-center">
-          <div 
+          <div
             className="flex items-center space-x-3 cursor-pointer hover:opacity-80 transition-opacity"
             onClick={onHomeClick}
           >
@@ -31,13 +35,22 @@ const Header = ({ cartItemsCount, onCartClick, onHomeClick }) => {
             <h1 className="text-2xl font-bold">Automares</h1>
           </div>
           <nav className="flex items-center space-x-6">
-            <button 
-              onClick={onHomeClick}
-              className="hover:text-blue-400 transition-colors"
-            >
+            <Link to="/" className="hover:text-blue-400 transition-colors">
               Home
-            </button>
-            <button 
+            </Link>
+            <Link to="/admin" className="hover:text-blue-400 transition-colors">
+              Admin
+            </Link>
+            <Link to="/login" className="hover:text-blue-400 transition-colors">
+              Login
+            </Link>
+            <Link to="/register" className="hover:text-blue-400 transition-colors">
+              Register
+            </Link>
+            <Link to="/profile" className="hover:text-blue-400 transition-colors">
+              Profile
+            </Link>
+            <button
               onClick={onCartClick}
               className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg transition-colors"
             >
@@ -120,7 +133,7 @@ const ProductCard = ({ product, onAddToCart }) => {
 };
 
 // Cart Component
-const CartView = ({ cart, onUpdateQuantity, onRemoveItem, onCheckout, onBackToHome }) => {
+const CartView = ({ cart, onUpdateQuantity, onRemoveItem, onCheckout, onBackToHome, onMpesaCheckout }) => {
   const [customerInfo, setCustomerInfo] = useState({
     name: '',
     email: '',
@@ -136,12 +149,26 @@ const CartView = ({ cart, onUpdateQuantity, onRemoveItem, onCheckout, onBackToHo
     });
   };
 
+  const [mpesaPhoneNumber, setMpesaPhoneNumber] = useState('');
+
   const handleCheckout = async () => {
     if (!customerInfo.name || !customerInfo.email || !customerInfo.phone || !customerInfo.address) {
       alert('Please fill in all required fields');
       return;
     }
     await onCheckout(customerInfo);
+  };
+
+  const handleMpesaCheckout = async () => {
+    if (!customerInfo.name || !customerInfo.email || !customerInfo.phone || !customerInfo.address) {
+      alert('Please fill in all required fields');
+      return;
+    }
+    if (!mpesaPhoneNumber) {
+      alert('Please enter your M-Pesa phone number');
+      return;
+    }
+    await onMpesaCheckout(customerInfo, mpesaPhoneNumber);
   };
 
   if (cart.items.length === 0) {
@@ -291,12 +318,27 @@ const CartView = ({ cart, onUpdateQuantity, onRemoveItem, onCheckout, onBackToHo
                     className="w-full px-3 py-2 border rounded-lg h-20"
                     required
                   />
-                  <button 
+                  <button
                     onClick={handleCheckout}
                     className="w-full bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg font-semibold"
                   >
                     Place Order
                   </button>
+                  <div className="mt-4">
+                    <input
+                      type="tel"
+                      placeholder="M-Pesa Phone Number"
+                      value={mpesaPhoneNumber}
+                      onChange={(e) => setMpesaPhoneNumber(e.target.value)}
+                      className="w-full px-3 py-2 border rounded-lg mb-2"
+                    />
+                    <button
+                      onClick={handleMpesaCheckout}
+                      className="w-full bg-green-800 hover:bg-green-900 text-white py-3 rounded-lg font-semibold"
+                    >
+                      Pay with M-Pesa
+                    </button>
+                  </div>
                   <button 
                     onClick={() => setShowCheckout(false)}
                     className="w-full border border-gray-300 hover:bg-gray-50 py-2 rounded-lg"
@@ -487,6 +529,38 @@ function App() {
     }
   };
 
+  const mpesaCheckout = async (customerInfo, mpesaPhoneNumber) => {
+    try {
+      // 1. Create Order
+      const orderData = {
+        customer_name: customerInfo.name,
+        customer_email: customerInfo.email,
+        customer_phone: customerInfo.phone,
+        customer_address: customerInfo.address,
+        cart_session_id: sessionId
+      };
+      const orderResponse = await axios.post(`${API}/orders`, orderData);
+      const newOrder = orderResponse.data;
+      setOrder(newOrder);
+
+      // 2. Initiate STK Push
+      await axios.post(`${API}/mpesa/stk-push`, null, {
+        params: {
+          order_id: newOrder.id,
+          phone_number: mpesaPhoneNumber
+        }
+      });
+
+      alert('STK push initiated. Please check your phone to complete the payment.');
+      setCart({ items: [], total_amount: 0 });
+      setView('order-confirmation');
+
+    } catch (error) {
+      console.error('Error with M-Pesa checkout:', error);
+      alert('Error with M-Pesa checkout. Please try again.');
+    }
+  };
+
   const handleCategoryFilter = (category) => {
     setSelectedCategory(category === 'All' ? '' : category);
   };
@@ -513,79 +587,86 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-100">
-      <Header 
-        cartItemsCount={getCartItemsCount()}
-        onCartClick={() => setView('cart')}
-        onHomeClick={() => setView('home')}
-      />
+    <Router>
+      <div className="min-h-screen bg-gray-100">
+        <Header
+          cartItemsCount={getCartItemsCount()}
+          onCartClick={() => setView('cart')}
+          onHomeClick={() => setView('home')}
+        />
 
-      {view === 'home' && (
-        <>
-          <HeroSection />
-          
-          {/* Categories Filter */}
-          <div className="container mx-auto px-4 py-8">
-            <div className="flex flex-wrap gap-3 mb-8">
-              {categories.map((category) => (
-                <button
-                  key={category}
-                  onClick={() => handleCategoryFilter(category)}
-                  className={`px-4 py-2 rounded-full transition-colors ${
-                    (category === 'All' && !selectedCategory) || category === selectedCategory
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-white text-gray-700 hover:bg-gray-50'
-                  }`}
-                >
-                  {category}
-                </button>
-              ))}
-            </div>
+        <Routes>
+          <Route path="/" element={
+            <>
+              <HeroSection />
 
-            {/* Products Grid */}
-            <div className="grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {products.map((product) => (
-                <ProductCard
-                  key={product.id}
-                  product={product}
-                  onAddToCart={addToCart}
-                />
-              ))}
-            </div>
+              {/* Categories Filter */}
+              <div className="container mx-auto px-4 py-8">
+                <div className="flex flex-wrap gap-3 mb-8">
+                  {categories.map((category) => (
+                    <button
+                      key={category}
+                      onClick={() => handleCategoryFilter(category)}
+                      className={`px-4 py-2 rounded-full transition-colors ${
+                        (category === 'All' && !selectedCategory) || category === selectedCategory
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-white text-gray-700 hover:bg-gray-50'
+                      }`}
+                    >
+                      {category}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Products Grid */}
+                <div className="grid md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                  {products.map((product) => (
+                    <ProductCard
+                      key={product.id}
+                      product={product}
+                      onAddToCart={addToCart}
+                    />
+                  ))}
+                </div>
+              </div>
+            </>
+          } />
+          <Route path="/admin" element={<Admin />} />
+          <Route path="/cart" element={
+            <CartView
+              cart={cart}
+              onUpdateQuantity={updateCartQuantity}
+              onRemoveItem={removeFromCart}
+              onCheckout={checkout}
+              onMpesaCheckout={mpesaCheckout}
+              onBackToHome={() => setView('home')}
+            />
+          } />
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          <Route path="/profile" element={<Profile />} />
+          <Route path="/order-confirmation" element={
+            <OrderConfirmation
+              order={order}
+              onBackToHome={() => setView('home')}
+            />
+          } />
+        </Routes>
+
+        {/* Footer */}
+        <footer className="bg-gray-900 text-white py-8 mt-12">
+          <div className="container mx-auto px-4 text-center">
+            <h3 className="text-2xl font-bold mb-4">Automares</h3>
+            <p className="text-gray-400 mb-4">
+              Quality auto parts delivered to your doorstep
+            </p>
+            <p className="text-gray-500">
+              📍 Kirinyaga Road, Nairobi | 📞 Contact us for inquiries
+            </p>
           </div>
-        </>
-      )}
-
-      {view === 'cart' && (
-        <CartView
-          cart={cart}
-          onUpdateQuantity={updateCartQuantity}
-          onRemoveItem={removeFromCart}
-          onCheckout={checkout}
-          onBackToHome={() => setView('home')}
-        />
-      )}
-
-      {view === 'order-confirmation' && order && (
-        <OrderConfirmation
-          order={order}
-          onBackToHome={() => setView('home')}
-        />
-      )}
-
-      {/* Footer */}
-      <footer className="bg-gray-900 text-white py-8 mt-12">
-        <div className="container mx-auto px-4 text-center">
-          <h3 className="text-2xl font-bold mb-4">Automares</h3>
-          <p className="text-gray-400 mb-4">
-            Quality auto parts delivered to your doorstep
-          </p>
-          <p className="text-gray-500">
-            📍 Kirinyaga Road, Nairobi | 📞 Contact us for inquiries
-          </p>
-        </div>
-      </footer>
-    </div>
+        </footer>
+      </div>
+    </Router>
   );
 }
 
