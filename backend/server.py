@@ -254,7 +254,7 @@ async def update_cart_item(session_id: str, product_id: str, quantity: int):
 @api_router.post("/orders", response_model=Order)
 async def create_order(order_data: OrderCreate):
     # Get cart
-    cart = await db.carts.find_one({"session_id": order_data.cart_session_id})
+    cart = await db.carts.find_one({"session_id": order_data.cart_session_id}, {"_id": 0})
     if not cart or not cart["items"]:
         raise HTTPException(status_code=400, detail="Cart is empty")
     
