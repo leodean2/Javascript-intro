@@ -207,7 +207,7 @@ async def get_cart(session_id: str):
 
 @api_router.post("/cart/remove")
 async def remove_from_cart(session_id: str, product_id: str):
-    cart = await db.carts.find_one({"session_id": session_id})
+    cart = await db.carts.find_one({"session_id": session_id}, {"_id": 0})
     if not cart:
         raise HTTPException(status_code=404, detail="Cart not found")
     
