@@ -227,7 +227,7 @@ async def update_cart_item(session_id: str, product_id: str, quantity: int):
     if quantity <= 0:
         return await remove_from_cart(session_id, product_id)
     
-    cart = await db.carts.find_one({"session_id": session_id})
+    cart = await db.carts.find_one({"session_id": session_id}, {"_id": 0})
     if not cart:
         raise HTTPException(status_code=404, detail="Cart not found")
     
