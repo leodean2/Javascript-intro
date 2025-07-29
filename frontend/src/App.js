@@ -652,19 +652,6 @@ function App() {
             />
           } />
         </Routes>
-
-        {/* Footer */}
-        <footer className="bg-gray-900 text-white py-8 mt-12">
-          <div className="container mx-auto px-4 text-center">
-            <h3 className="text-2xl font-bold mb-4">Automares</h3>
-            <p className="text-gray-400 mb-4">
-              Quality auto parts delivered to your doorstep
-            </p>
-            <p className="text-gray-500">
-              📍 Kirinyaga Road, Nairobi | 📞 Contact us for inquiries
-            </p>
-          </div>
-        </footer>
       </div>
     </Router>
   );
