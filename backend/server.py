@@ -1,4 +1,5 @@
-from fastapi import FastAPI, APIRouter, HTTPException, File, UploadFile, Form
+from fastapi import FastAPI, APIRouter, HTTPException, File, UploadFile, Form, Depends
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -8,12 +9,22 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 import base64
 import json
+from passlib.context import CryptContext
+from jose import JWTError, jwt
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
+# Security
+SECRET_KEY = os.environ.get("SECRET_KEY", "a_secret_key")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/token")
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
@@ -78,6 +89,7 @@ class OrderItem(BaseModel):
 
 class Order(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: Optional[str] = None
     customer_name: str
     customer_email: str
     customer_phone: str
@@ -88,6 +100,16 @@ class Order(BaseModel):
     payment_status: str = "pending"  # pending, paid, failed
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+class User(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    email: str
+    hashed_password: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class UserCreate(BaseModel):
+    email: str
+    password: str
 
 class OrderCreate(BaseModel):
     customer_name: str
@@ -252,7 +274,7 @@ async def update_cart_item(session_id: str, product_id: str, quantity: int):
 
 # Order endpoints
 @api_router.post("/orders", response_model=Order)
-async def create_order(order_data: OrderCreate):
+async def create_order(order_data: OrderCreate, current_user: User = Depends(get_current_user)):
     # Get cart
     cart = await db.carts.find_one({"session_id": order_data.cart_session_id}, {"_id": 0})
     if not cart or not cart["items"]:
@@ -287,6 +309,7 @@ async def create_order(order_data: OrderCreate):
     
     # Create order
     order = Order(
+        user_id=current_user.id if current_user else None,
         customer_name=order_data.customer_name,
         customer_email=order_data.customer_email,
         customer_phone=order_data.customer_phone,
@@ -301,6 +324,11 @@ async def create_order(order_data: OrderCreate):
     await db.carts.delete_one({"session_id": order_data.cart_session_id})
     
     return order
+
+@api_router.get("/orders/me", response_model=List[Order])
+async def get_my_orders(current_user: User = Depends(get_current_user)):
+    orders = await db.orders.find({"user_id": current_user.id}).to_list(100)
+    return [Order(**order) for order in orders]
 
 @api_router.get("/orders", response_model=List[Order])
 async def get_orders(limit: int = 100):
@@ -395,6 +423,76 @@ async def init_sample_data():
     
     return {"message": "Sample data initialized successfully"}
 
+# Auth functions
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+async def get_user(email: str):
+    user = await db.users.find_one({"email": email})
+    if user:
+        return User(**user)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    credentials_exception = HTTPException(
+        status_code=401,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+    user = await get_user(email=email)
+    if user is None:
+        raise credentials_exception
+    return user
+
+# Auth endpoints
+@api_router.post("/register", response_model=User)
+async def register(user: UserCreate):
+    db_user = await db.users.find_one({"email": user.email})
+    if db_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    hashed_password = get_password_hash(user.password)
+    user_obj = User(email=user.email, hashed_password=hashed_password)
+    await db.users.insert_one(user_obj.dict())
+    return user_obj
+
+@api_router.post("/token")
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = await get_user(email=form_data.username)
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=401,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@api_router.get("/users/me", response_model=User)
+async def read_users_me(current_user: User = Depends(get_current_user)):
+    return current_user
+
 # Include the router in the main app
 app.include_router(api_router)
 
@@ -405,6 +503,74 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# M-Pesa Integration
+mpesa_consumer_key = os.environ.get("MPESA_CONSUMER_KEY")
+mpesa_consumer_secret = os.environ.get("MPESA_CONSUMER_SECRET")
+mpesa_shortcode = os.environ.get("MPESA_SHORTCODE")
+mpesa_passkey = os.environ.get("MPESA_PASSKEY")
+mpesa_env = "sandbox"  # or "production"
+
+if mpesa_env == "production":
+    mpesa_api_url = "https://api.safaricom.co.ke"
+else:
+    mpesa_api_url = "https://sandbox.safaricom.co.ke"
+
+def get_mpesa_access_token():
+    url = f"{mpesa_api_url}/oauth/v1/generate?grant_type=client_credentials"
+    response = requests.get(url, auth=(mpesa_consumer_key, mpesa_consumer_secret))
+    if response.status_code == 200:
+        return response.json()["access_token"]
+    else:
+        raise HTTPException(status_code=500, detail="Could not get M-Pesa access token")
+
+@api_router.post("/mpesa/stk-push")
+async def initiate_stk_push(order_id: str, phone_number: str):
+    order = await db.orders.find_one({"id": order_id})
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    access_token = get_mpesa_access_token()
+
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    password_str = f"{mpesa_shortcode}{mpesa_passkey}{timestamp}"
+    password = base64.b64encode(password_str.encode()).decode()
+
+    payload = {
+        "BusinessShortCode": mpesa_shortcode,
+        "Password": password,
+        "Timestamp": timestamp,
+        "TransactionType": "CustomerPayBillOnline",
+        "Amount": int(order["total_amount"]),
+        "PartyA": phone_number,
+        "PartyB": mpesa_shortcode,
+        "PhoneNumber": phone_number,
+        "CallBackURL": f"{os.environ.get('BASE_URL')}/api/mpesa/callback",
+        "AccountReference": order_id,
+        "TransactionDesc": "Payment for order"
+    }
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+
+    url = f"{mpesa_api_url}/mpesa/stkpush/v1/processrequest"
+    response = requests.post(url, json=payload, headers=headers)
+
+    if response.status_code == 200:
+        return response.json()
+    else:
+        raise HTTPException(status_code=500, detail="M-Pesa STK push failed")
+
+@api_router.post("/mpesa/callback")
+async def mpesa_callback(request: Request):
+    data = await request.json()
+    # Process the callback data here
+    # For example, update the order payment status
+    # ...
+    return {"ResultCode": 0, "ResultDesc": "Accepted"}
+
 
 # Configure logging
 logging.basicConfig(
